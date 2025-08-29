@@ -1,0 +1,26 @@
+# fastapi
+# uvicorn[standard]
+# python-multipart
+# pdfplumber
+# langchain
+# langchain-ollama
+# langchain-chroma
+# chromadb
+# python-dotenv
+# aiofiles
+# pandas
+# jwt 
+
+# requirements.txt
+fastapi
+uvicorn[standard]
+pdfplumber
+langchain
+langchain-community
+langchain-chroma
+chromadb
+ollama
+python-jose
+bcrypt
+python-multipart
+aiofiles
