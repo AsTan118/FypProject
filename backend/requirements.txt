@@ -10,17 +10,23 @@
 # aiofiles
 # pandas
 # jwt 
-
 # requirements.txt
 fastapi
 uvicorn[standard]
 pdfplumber
+sqlalchemy
 langchain
 langchain-community
 langchain-chroma
+langchain-ollama
 chromadb
-ollama
-python-jose
+python-jose[cryptography]
+passlib
+python-dotenv
+langchain-core
 bcrypt
 python-multipart
 aiofiles
+pyjwt
+email-validator
+pydantic[email]

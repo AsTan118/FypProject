@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve & 
+      sleep 3 && 
+      ollama pull llama3.2 && 
+      ollama pull mxbai-embed-large && 
+      wait"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+
+
+  backend:
+    build: ./backend
+    container_name: backend
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    ports:
+      - "8000:5000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_BACKEND_URL=http://backend:5000
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  ollama_models:
+    name: ollama_models 

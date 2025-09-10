@@ -1,47 +1,82 @@
-// App.js - Complete React App with Authentication
 import React, { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
 
-// Configure axios
-axios.defaults.baseURL = 'http://localhost:8000';
+// Axios configuration
+const API_BASE = 'http://localhost:8000';
 
-// Add token to all requests if it exists
-axios.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token');
+// Simple axios-like implementation with better error handling
+const axios = {
+  defaults: { baseURL: API_BASE },
+  
+  async request(config) {
+    const url = `${this.defaults.baseURL}${config.url}`;
+    const token = sessionStorage.getItem('token');
+    
+    const headers = {
+      ...config.headers
+    };
+    
+    // Add auth token if available
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+      headers['Authorization'] = `Bearer ${token}`;
     }
-    return config;
+    
+    // Don't set Content-Type for FormData - let browser set it with boundary
+    if (!(config.data instanceof FormData)) {
+      headers['Content-Type'] = 'application/json';
+    }
+    
+    try {
+      const response = await fetch(url, {
+        method: config.method || 'GET',
+        headers,
+        body: config.data instanceof FormData 
+          ? config.data 
+          : config.data 
+            ? JSON.stringify(config.data) 
+            : undefined
+      });
+      
+      const text = await response.text();
+      let data;
+      
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      
+      if (!response.ok) {
+        throw { 
+          response: { 
+            status: response.status, 
+            data: data || { detail: 'Request failed' }
+          } 
+        };
+      }
+      
+      return { data };
+    } catch (error) {
+      console.error('Request error:', error);
+      throw error;
+    }
   },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
-
-// Handle auth errors globally
-axios.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/';
-    }
-    return Promise.reject(error);
-  }
-);
+  
+  get(url) { return this.request({ url, method: 'GET' }); },
+  post(url, data, config = {}) { return this.request({ url, method: 'POST', data, ...config }); },
+  put(url, data) { return this.request({ url, method: 'PUT', data }); },
+  delete(url) { return this.request({ url, method: 'DELETE' }); }
+};
 
 const App = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
-  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [authMode, setAuthMode] = useState('login');
   const [loading, setLoading] = useState(true);
+  const [currentView, setCurrentView] = useState('chat'); // 'chat' or 'admin'
 
-  // Check if user is logged in on mount
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    const savedUser = localStorage.getItem('user');
+    const token = sessionStorage.getItem('token');
+    const savedUser = sessionStorage.getItem('user');
     
     if (token && savedUser) {
       setIsAuthenticated(true);
@@ -51,10 +86,11 @@ const App = () => {
   }, []);
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('user');
     setIsAuthenticated(false);
     setUser(null);
+    setCurrentView('chat');
   };
 
   if (loading) {
@@ -83,12 +119,27 @@ const App = () => {
     );
   }
 
+  // Admin users get admin panel, students get chat
+  if (user?.role === 'admin' && currentView === 'admin') {
+    return (
+      <AdminPanel 
+        user={user} 
+        handleLogout={handleLogout} 
+        setCurrentView={setCurrentView}
+      />
+    );
+  }
+
   return (
-    <MainApp user={user} handleLogout={handleLogout} />
+    <MainApp 
+      user={user} 
+      handleLogout={handleLogout} 
+      setCurrentView={setCurrentView}
+    />
   );
 };
 
-// Authentication Screen Component
+// Authentication Screen
 const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
   const [formData, setFormData] = useState({
     email: '',
@@ -115,14 +166,12 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
 
     try {
       if (authMode === 'signup') {
-        // Validate passwords match
         if (formData.password !== formData.confirmPassword) {
           setError('Passwords do not match');
           setLoading(false);
           return;
         }
 
-        // Signup
         const response = await axios.post('/api/auth/signup', {
           email: formData.email,
           username: formData.username,
@@ -130,19 +179,18 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
           full_name: formData.fullName
         });
 
-        localStorage.setItem('token', response.data.access_token);
-        localStorage.setItem('user', JSON.stringify(response.data.user));
+        sessionStorage.setItem('token', response.data.access_token);
+        sessionStorage.setItem('user', JSON.stringify(response.data.user));
         setUser(response.data.user);
         setIsAuthenticated(true);
       } else {
-        // Login
         const response = await axios.post('/api/auth/login', {
           username: formData.username,
           password: formData.password
         });
 
-        localStorage.setItem('token', response.data.access_token);
-        localStorage.setItem('user', JSON.stringify(response.data.user));
+        sessionStorage.setItem('token', response.data.access_token);
+        sessionStorage.setItem('user', JSON.stringify(response.data.user));
         setUser(response.data.user);
         setIsAuthenticated(true);
       }
@@ -206,7 +254,8 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
       color: '#ffffff',
       fontSize: '14px',
       outline: 'none',
-      transition: 'border-color 0.2s'
+      transition: 'border-color 0.2s',
+      boxSizing: 'border-box'  // Added this to ensure padding is included in width
     },
     button: {
       width: '100%',
@@ -219,7 +268,8 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
       fontWeight: '600',
       cursor: 'pointer',
       transition: 'background-color 0.2s',
-      marginTop: '20px'
+      marginTop: '20px',
+      boxSizing: 'border-box'  // Added this
     },
     buttonDisabled: {
       backgroundColor: '#565869',
@@ -232,7 +282,8 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
       padding: '10px',
       borderRadius: '6px',
       fontSize: '14px',
-      marginTop: '12px'
+      marginTop: '12px',
+      boxSizing: 'border-box'  // Added this
     },
     switchMode: {
       textAlign: 'center',
@@ -245,6 +296,17 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
       cursor: 'pointer',
       textDecoration: 'none',
       fontWeight: '500'
+    },
+    adminNote: {
+      backgroundColor: 'rgba(16, 163, 127, 0.1)',
+      border: '1px solid rgba(16, 163, 127, 0.3)',
+      color: '#10A37F',
+      padding: '10px',
+      borderRadius: '6px',
+      fontSize: '12px',
+      marginTop: '12px',
+      textAlign: 'center',
+      boxSizing: 'border-box'  // Added this
     }
   };
 
@@ -252,7 +314,7 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
     <div style={styles.container}>
       <div style={styles.authCard}>
         <div style={styles.logo}>
-          <h1 style={styles.title}>PDF RAG System</h1>
+          <h1 style={styles.title}>UTAR</h1>
           <p style={styles.subtitle}>
             {authMode === 'login' ? 'Sign in to your account' : 'Create a new account'}
           </p>
@@ -336,7 +398,7 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
               {error}
             </div>
           )}
-
+          
           <button
             type="submit"
             disabled={loading}
@@ -371,21 +433,561 @@ const AuthScreen = ({ authMode, setAuthMode, setIsAuthenticated, setUser }) => {
   );
 };
 
-// Main Application Component (with authentication)
-const MainApp = ({ user, handleLogout }) => {
+// Admin Panel Component
+const AdminPanel = ({ user, handleLogout, setCurrentView }) => {
+  const [activeTab, setActiveTab] = useState('stats');
+  const [stats, setStats] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [pdfs, setPdfs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    loadStats();
+    loadUsers();
+    loadPdfs();
+  }, []);
+
+  const loadStats = async () => {
+    try {
+      const response = await axios.get('/api/admin/stats');
+      setStats(response.data);
+    } catch (err) {
+      console.error('Error loading stats:', err);
+    }
+  };
+
+  const loadUsers = async () => {
+    try {
+      const response = await axios.get('/api/admin/users');
+      setUsers(response.data.users);
+    } catch (err) {
+      console.error('Error loading users:', err);
+    }
+  };
+
+  const loadPdfs = async () => {
+    try {
+      const response = await axios.get('/api/admin/pdfs');
+      setPdfs(response.data.pdfs);
+    } catch (err) {
+      console.error('Error loading PDFs:', err);
+    }
+  };
+
+  const handleFileUpload = async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setLoading(true);
+    setUploadProgress({ total: files.length, current: 0, results: [] });
+    
+    // Create FormData and add all PDF files
+    const formData = new FormData();
+    let validFiles = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        setUploadProgress(prev => ({
+          ...prev,
+          results: [...(prev.results || []), { 
+            filename: file.name, 
+            success: false, 
+            error: 'Not a PDF file' 
+          }]
+        }));
+        continue;
+      }
+      // Append each file with the same field name 'files'
+      formData.append('files', file);
+      validFiles++;
+    }
+
+    if (validFiles === 0) {
+      alert('No valid PDF files selected');
+      setLoading(false);
+      setUploadProgress(null);
+      return;
+    }
+
+    try {
+      // Don't set Content-Type header - let browser set it with boundary
+      const response = await axios.post('/api/admin/upload-public', formData);
+      
+      // Update progress with results
+      setUploadProgress({
+        total: files.length,
+        current: files.length,
+        results: response.data.results || []
+      });
+      
+      // Reload PDFs list after a short delay
+      setTimeout(() => {
+        loadPdfs();
+        loadStats();
+      }, 1000);
+      
+      // Show success message
+      const successCount = response.data.successful_count || 0;
+      const failedCount = response.data.failed_count || 0;
+      
+      if (successCount > 0) {
+        alert(`Successfully uploaded ${successCount} file(s)${failedCount > 0 ? `, ${failedCount} failed` : ''}`);
+      } else {
+        alert('All uploads failed. Please check the files and try again.');
+      }
+      
+    } catch (err) {
+      console.error('Upload error:', err);
+      const errorMsg = err.response?.data?.detail || err.message || 'Unknown error';
+      alert('Failed to upload files: ' + errorMsg);
+      
+      // Show error in progress
+      setUploadProgress(prev => ({
+        ...prev,
+        error: errorMsg
+      }));
+    } finally {
+      setLoading(false);
+      // Clear progress after 3 seconds
+      setTimeout(() => {
+        setUploadProgress(null);
+      }, 3000);
+      
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const updatePdfVisibility = async (pdfId, visibility) => {
+    try {
+      await axios.put(`/api/admin/pdfs/${pdfId}/visibility`, visibility);
+      loadPdfs();
+    } catch (err) {
+      console.error('Error updating visibility:', err);
+    }
+  };
+
+  const deleteUser = async (userId, username) => {
+    if (!window.confirm(`Delete user "${username}"?`)) return;
+    
+    try {
+      await axios.delete(`/api/admin/users/${userId}`);
+      loadUsers();
+      loadStats();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Error deleting user');
+    }
+  };
+
+  const styles = {
+    container: {
+      height: '100vh',
+      backgroundColor: '#343541',
+      display: 'flex',
+      flexDirection: 'column'
+    },
+    header: {
+      backgroundColor: '#202123',
+      padding: '16px 24px',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      borderBottom: '1px solid #4d4d5f'
+    },
+    title: {
+      color: '#ffffff',
+      fontSize: '20px',
+      fontWeight: '600',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '12px'
+    },
+    userInfo: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '16px',
+      color: '#ffffff'
+    },
+    tabs: {
+      display: 'flex',
+      gap: '8px',
+      padding: '16px 24px',
+      backgroundColor: '#202123',
+      borderBottom: '1px solid #4d4d5f'
+    },
+    tab: {
+      padding: '8px 16px',
+      backgroundColor: 'transparent',
+      border: '1px solid #565869',
+      borderRadius: '6px',
+      color: '#8e8ea0',
+      cursor: 'pointer',
+      fontSize: '14px',
+      transition: 'all 0.2s'
+    },
+    activeTab: {
+      backgroundColor: '#10A37F',
+      borderColor: '#10A37F',
+      color: '#ffffff'
+    },
+    content: {
+      flex: 1,
+      overflowY: 'auto',
+      padding: '24px'
+    },
+    statsGrid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+      gap: '16px',
+      marginBottom: '24px'
+    },
+    statCard: {
+      backgroundColor: '#444654',
+      borderRadius: '8px',
+      padding: '16px',
+      border: '1px solid #565869'
+    },
+    statValue: {
+      fontSize: '28px',
+      fontWeight: '600',
+      color: '#ffffff',
+      marginBottom: '4px'
+    },
+    statLabel: {
+      fontSize: '14px',
+      color: '#8e8ea0'
+    },
+    table: {
+      width: '100%',
+      backgroundColor: '#444654',
+      borderRadius: '8px',
+      overflow: 'hidden',
+      border: '1px solid #565869'
+    },
+    tableHeader: {
+      backgroundColor: '#40414f'
+    },
+    th: {
+      padding: '12px',
+      textAlign: 'left',
+      color: '#d1d5db',
+      fontWeight: '600',
+      fontSize: '14px',
+      borderBottom: '1px solid #565869'
+    },
+    td: {
+      padding: '12px',
+      color: '#ffffff',
+      fontSize: '14px',
+      borderBottom: '1px solid #565869'
+    },
+    button: {
+      padding: '6px 12px',
+      backgroundColor: '#10A37F',
+      border: 'none',
+      borderRadius: '4px',
+      color: '#ffffff',
+      cursor: 'pointer',
+      fontSize: '13px',
+      marginRight: '8px'
+    },
+    deleteButton: {
+      backgroundColor: '#ef4444'
+    },
+    uploadSection: {
+      backgroundColor: '#444654',
+      borderRadius: '8px',
+      padding: '20px',
+      marginBottom: '20px',
+      border: '1px solid #565869'
+    },
+    uploadButton: {
+      padding: '10px 20px',
+      backgroundColor: '#10A37F',
+      border: 'none',
+      borderRadius: '6px',
+      color: '#ffffff',
+      cursor: 'pointer',
+      fontSize: '14px',
+      fontWeight: '600'
+    },
+    backButton: {
+      padding: '8px 16px',
+      backgroundColor: 'transparent',
+      border: '1px solid #565869',
+      borderRadius: '6px',
+      color: '#ffffff',
+      cursor: 'pointer',
+      fontSize: '14px'
+    },
+    progressBar: {
+      marginTop: '16px',
+      padding: '12px',
+      backgroundColor: '#40414f',
+      borderRadius: '6px'
+    }
+  };
+
+  return (
+    <div style={styles.container}>
+      <div style={styles.header}>
+        <div style={styles.title}>
+          <span>🛡️ Admin Panel</span>
+          <button 
+            onClick={() => setCurrentView('chat')}
+            style={styles.backButton}
+          >
+            Switch to Chat
+          </button>
+        </div>
+        <div style={styles.userInfo}>
+          <span>{user.full_name || user.username} (Admin)</span>
+          <button onClick={handleLogout} style={{...styles.button, ...styles.deleteButton}}>
+            Logout
+          </button>
+        </div>
+      </div>
+
+      <div style={styles.tabs}>
+        <button
+          style={{...styles.tab, ...(activeTab === 'stats' ? styles.activeTab : {})}}
+          onClick={() => setActiveTab('stats')}
+        >
+          Dashboard
+        </button>
+        <button
+          style={{...styles.tab, ...(activeTab === 'users' ? styles.activeTab : {})}}
+          onClick={() => setActiveTab('users')}
+        >
+          Users
+        </button>
+        <button
+          style={{...styles.tab, ...(activeTab === 'pdfs' ? styles.activeTab : {})}}
+          onClick={() => setActiveTab('pdfs')}
+        >
+          PDFs
+        </button>
+        <button
+          style={{...styles.tab, ...(activeTab === 'upload' ? styles.activeTab : {})}}
+          onClick={() => setActiveTab('upload')}
+        >
+          Upload PDFs
+        </button>
+      </div>
+
+      <div style={styles.content}>
+        {activeTab === 'stats' && stats && (
+          <div>
+            <div style={styles.statsGrid}>
+              <div style={styles.statCard}>
+                <div style={styles.statValue}>{stats.total_users}</div>
+                <div style={styles.statLabel}>Total Users</div>
+              </div>
+              <div style={styles.statCard}>
+                <div style={styles.statValue}>{stats.admin_users}</div>
+                <div style={styles.statLabel}>Admins</div>
+              </div>
+              <div style={styles.statCard}>
+                <div style={styles.statValue}>{stats.student_users}</div>
+                <div style={styles.statLabel}>Students</div>
+              </div>
+              <div style={styles.statCard}>
+                <div style={styles.statValue}>{stats.total_pdfs}</div>
+                <div style={styles.statLabel}>Total PDFs</div>
+              </div>
+              <div style={styles.statCard}>
+                <div style={styles.statValue}>{stats.public_pdfs}</div>
+                <div style={styles.statLabel}>Public PDFs</div>
+              </div>
+              <div style={styles.statCard}>
+                <div style={styles.statValue}>{stats.total_queries}</div>
+                <div style={styles.statLabel}>Total Queries</div>
+              </div>
+            </div>
+
+            <h3 style={{color: '#ffffff', marginTop: '32px', marginBottom: '16px'}}>Recent Queries</h3>
+            <table style={styles.table}>
+              <thead style={styles.tableHeader}>
+                <tr>
+                  <th style={styles.th}>User</th>
+                  <th style={styles.th}>Question</th>
+                  <th style={styles.th}>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.recent_queries?.map((query, idx) => (
+                  <tr key={idx}>
+                    <td style={styles.td}>{query.username}</td>
+                    <td style={styles.td}>{query.question}</td>
+                    <td style={styles.td}>{new Date(query.created_at).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {activeTab === 'users' && (
+          <div>
+            <h3 style={{color: '#ffffff', marginBottom: '16px'}}>All Users</h3>
+            <table style={styles.table}>
+              <thead style={styles.tableHeader}>
+                <tr>
+                  <th style={styles.th}>Username</th>
+                  <th style={styles.th}>Email</th>
+                  <th style={styles.th}>Full Name</th>
+                  <th style={styles.th}>Role</th>
+                  <th style={styles.th}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(u => (
+                  <tr key={u.id}>
+                    <td style={styles.td}>{u.username}</td>
+                    <td style={styles.td}>{u.email}</td>
+                    <td style={styles.td}>{u.full_name || '-'}</td>
+                    <td style={styles.td}>
+                      <span style={{
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        backgroundColor: u.role === 'admin' ? '#10A37F' : '#565869',
+                        fontSize: '12px'
+                      }}>
+                        {u.role}
+                      </span>
+                    </td>
+                    <td style={styles.td}>
+                      {u.id !== user.id && (
+                        <button
+                          style={{...styles.button, ...styles.deleteButton}}
+                          onClick={() => deleteUser(u.id, u.username)}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {activeTab === 'pdfs' && (
+          <div>
+            <h3 style={{color: '#ffffff', marginBottom: '16px'}}>All PDFs</h3>
+            <table style={styles.table}>
+              <thead style={styles.tableHeader}>
+                <tr>
+                  <th style={styles.th}>Filename</th>
+                  <th style={styles.th}>Owner</th>
+                  <th style={styles.th}>Visibility</th>
+                  <th style={styles.th}>Status</th>
+                  <th style={styles.th}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pdfs.map(pdf => (
+                  <tr key={pdf.id}>
+                    <td style={styles.td}>{pdf.filename}</td>
+                    <td style={styles.td}>{pdf.owner_username || pdf.username}</td>
+                    <td style={styles.td}>
+                      <span style={{
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        backgroundColor: pdf.visibility === 'public' ? '#10A37F' : '#565869',
+                        fontSize: '12px'
+                      }}>
+                        {pdf.visibility}
+                      </span>
+                    </td>
+                    <td style={styles.td}>{pdf.processing_status}</td>
+                    <td style={styles.td}>
+                      <select
+                        value={pdf.visibility}
+                        onChange={(e) => updatePdfVisibility(pdf.id, e.target.value)}
+                        style={{
+                          padding: '4px',
+                          backgroundColor: '#40414f',
+                          border: '1px solid #565869',
+                          borderRadius: '4px',
+                          color: '#ffffff'
+                        }}
+                      >
+                        <option value="public">Public</option>
+                        <option value="private">Private</option>
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {activeTab === 'upload' && (
+          <div style={styles.uploadSection}>
+            <h3 style={{color: '#ffffff', marginBottom: '16px'}}>Upload Public PDFs</h3>
+            <p style={{color: '#8e8ea0', marginBottom: '20px'}}>
+              PDFs uploaded here will be accessible to all users in the system.
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf"
+              multiple
+              onChange={handleFileUpload}
+              style={{ display: 'none' }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={styles.uploadButton}
+              disabled={loading}
+            >
+              {loading ? 'Uploading...' : 'Select PDFs to Upload'}
+            </button>
+            <p style={{color: '#8e8ea0', marginTop: '12px', fontSize: '13px'}}>
+              You can select multiple PDF files at once
+            </p>
+            
+            {uploadProgress && (
+              <div style={styles.progressBar}>
+                <div style={{color: '#ffffff', marginBottom: '8px'}}>
+                  Processing: {uploadProgress.current} / {uploadProgress.total} files
+                </div>
+                {uploadProgress.results.map((result, idx) => (
+                  <div key={idx} style={{
+                    color: result.success ? '#10A37F' : '#ef4444',
+                    fontSize: '13px',
+                    marginTop: '4px'
+                  }}>
+                    {result.filename}: {result.success ? '✓ Success' : `✗ ${result.error}`}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Main Chat Application
+const MainApp = ({ user, handleLogout, setCurrentView }) => {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [pdfs, setPdfs] = useState([]);
   const [showSidebar, setShowSidebar] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
-  const [processingPdfs, setProcessingPdfs] = useState(new Map());
-  const [showUploadModal, setShowUploadModal] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
-  const textareaRef = useRef(null);
-  const eventSourcesRef = useRef(new Map());
 
   // Styles
   const styles = {
@@ -393,7 +995,42 @@ const MainApp = ({ user, handleLogout }) => {
       display: 'flex',
       height: '100vh',
       backgroundColor: '#343541',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif',
+      flexDirection: 'column'
+    },
+    header: {
+      height: '50px',
+      backgroundColor: '#40414f',
+      borderBottom: '1px solid #565869',
+      display: 'flex',
+      alignItems: 'center',
+      padding: '0 16px',
+      position: 'relative',
+      zIndex: 100
+    },
+    headerTitle: {
+      color: '#ffffff',
+      fontSize: '16px',
+      fontWeight: '600',
+      marginLeft: '12px',
+      letterSpacing: '0.5px'
+    },
+    menuButton: {
+      backgroundColor: 'transparent',
+      border: 'none',
+      color: '#d1d5db',
+      cursor: 'pointer',
+      padding: '6px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: '4px',
+      transition: 'background-color 0.2s'
+    },
+    mainContent: {
+      display: 'flex',
+      flex: 1,
+      overflow: 'hidden'
     },
     sidebar: {
       width: showSidebar ? '260px' : '0',
@@ -415,68 +1052,17 @@ const MainApp = ({ user, handleLogout }) => {
       marginBottom: '12px',
       color: '#ffffff'
     },
-    userAvatar: {
-      width: '32px',
-      height: '32px',
-      borderRadius: '50%',
-      backgroundColor: '#10A37F',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontSize: '14px',
-      fontWeight: '600',
-      marginBottom: '8px'
-    },
-    userName: {
-      fontSize: '14px',
-      fontWeight: '500',
-      marginBottom: '4px'
-    },
-    userEmail: {
-      fontSize: '12px',
-      color: '#8e8ea0'
-    },
-    logoutButton: {
+    adminButton: {
       width: '100%',
       padding: '8px',
-      backgroundColor: 'transparent',
-      border: '1px solid #565869',
+      backgroundColor: '#10A37F',
+      border: 'none',
       borderRadius: '6px',
-      color: '#ef4444',
+      color: '#ffffff',
       cursor: 'pointer',
       marginTop: '8px',
       fontSize: '13px',
-      transition: 'background-color 0.2s'
-    },
-    newChatButton: {
-      width: '100%',
-      padding: '12px',
-      backgroundColor: 'transparent',
-      border: '1px solid #565869',
-      borderRadius: '6px',
-      color: '#ffffff',
-      cursor: 'pointer',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '12px',
-      fontSize: '14px',
-      transition: 'background-color 0.2s'
-    },
-    sidebarContent: {
-      flex: 1,
-      overflowY: 'auto',
-      padding: '12px'
-    },
-    pdfItem: {
-      backgroundColor: '#2a2b32',
-      borderRadius: '6px',
-      padding: '12px',
-      marginBottom: '8px',
-      color: '#ffffff',
-      fontSize: '14px',
-      position: 'relative',
-      cursor: 'pointer',
-      transition: 'background-color 0.2s'
+      fontWeight: '600'
     },
     mainArea: {
       flex: 1,
@@ -484,278 +1070,42 @@ const MainApp = ({ user, handleLogout }) => {
       flexDirection: 'column',
       backgroundColor: '#343541'
     },
-    header: {
-      backgroundColor: '#343541',
-      borderBottom: '1px solid #4d4d5f',
-      padding: '18px 24px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between'
-    },
     messagesArea: {
       flex: 1,
       overflowY: 'auto',
       backgroundColor: '#343541'
     },
-    messageContainer: {
-      display: 'flex',
-      justifyContent: 'center',
-      borderBottom: '1px solid #4d4d5f',
-      backgroundColor: '#343541'
-    },
-    messageWrapper: {
-      maxWidth: '48rem',
-      width: '100%',
-      padding: '24px',
-      display: 'flex',
-      gap: '24px'
-    },
-    userMessageContainer: {
-      backgroundColor: '#343541'
-    },
-    assistantMessageContainer: {
-      backgroundColor: '#444654'
-    },
-    avatar: {
-      width: '30px',
-      height: '30px',
-      borderRadius: '2px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexShrink: 0
-    },
-    userAvatarChat: {
-      backgroundColor: '#5436DA'
-    },
-    assistantAvatar: {
-      backgroundColor: '#10A37F'
-    },
-    messageContent: {
-      flex: 1,
-      color: '#d1d5db',
-      fontSize: '15px',
-      lineHeight: '1.75'
-    },
     inputArea: {
       borderTop: '1px solid #4d4d5f',
       backgroundColor: '#343541',
       padding: '24px'
-    },
-    inputWrapper: {
-      maxWidth: '48rem',
-      margin: '0 auto',
-      position: 'relative'
-    },
-    inputContainer: {
-      position: 'relative',
-      backgroundColor: '#40414f',
-      borderRadius: '12px',
-      border: '1px solid #565869',
-      display: 'flex',
-      alignItems: 'center',
-      padding: '0 12px'
-    },
-    input: {
-      flex: 1,
-      backgroundColor: 'transparent',
-      border: 'none',
-      outline: 'none',
-      padding: '12px',
-      color: '#ffffff',
-      fontSize: '15px',
-      resize: 'none',
-      minHeight: '24px',
-      maxHeight: '200px',
-      fontFamily: 'inherit'
-    },
-    button: {
-      backgroundColor: 'transparent',
-      border: 'none',
-      padding: '8px',
-      cursor: 'pointer',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderRadius: '6px',
-      transition: 'background-color 0.2s'
-    },
-    sendButton: {
-      color: '#ffffff',
-      opacity: inputMessage.trim() && !isLoading ? 1 : 0.4,
-      cursor: inputMessage.trim() && !isLoading ? 'pointer' : 'not-allowed'
-    },
-    attachButton: {
-      color: '#8e8ea0'
-    },
-    modal: {
-      position: 'fixed',
-      inset: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.5)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 50
-    },
-    modalContent: {
-      backgroundColor: '#444654',
-      borderRadius: '12px',
-      padding: '24px',
-      maxWidth: '480px',
-      width: '90%',
-      border: '1px solid #565869'
-    },
-    uploadZone: {
-      border: '2px dashed',
-      borderColor: dragActive ? '#10A37F' : '#565869',
-      borderRadius: '8px',
-      padding: '40px',
-      textAlign: 'center',
-      backgroundColor: dragActive ? '#40414f' : 'transparent',
-      transition: 'all 0.2s'
-    },
-    uploadButton: {
-      padding: '10px 20px',
-      backgroundColor: '#10A37F',
-      color: '#ffffff',
-      border: 'none',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      fontSize: '14px',
-      marginTop: '16px'
-    },
-    menuButton: {
-      padding: '8px',
-      backgroundColor: 'transparent',
-      border: '1px solid #565869',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      color: '#ffffff',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center'
-    },
-    disclaimer: {
-      textAlign: 'center',
-      color: '#8e8ea0',
-      fontSize: '12px',
-      marginTop: '12px'
     }
   };
 
-  // Scroll to bottom
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  // Initial setup
   useEffect(() => {
     fetchPDFs();
-    
     setMessages([{
       id: 1,
       type: 'assistant',
-      content: `Hello ${user.full_name || user.username}! I can help you analyze your PDF documents. Upload a PDF using the attach button below, then ask me any questions about its content.`,
+      content: `Hello ${user.full_name || user.username}! I can help you analyze PDF documents. ${user.role === 'admin' ? 'As an admin, you can upload public PDFs for all users and manage the system.' : 'Upload your PDFs to get started.'}`,
       timestamp: new Date()
     }]);
-    
-    return () => {
-      eventSourcesRef.current.forEach((eventSource) => {
-        eventSource.close();
-      });
-    };
   }, [user]);
 
-  const startSSEMonitoring = (pdfId) => {
-    if (eventSourcesRef.current.has(pdfId)) {
-      return;
+  // Only poll for updates when there are PDFs being processed
+  useEffect(() => {
+    const hasProcessingPdfs = pdfs.some(pdf => pdf.processing_status === 'processing');
+    
+    if (hasProcessingPdfs) {
+      const interval = setInterval(fetchPDFs, 5000);
+      return () => clearInterval(interval);
     }
-
-    console.log(`Starting SSE monitoring for PDF ${pdfId}`);
-    
-    const eventSource = new EventSource(`http://localhost:8000/api/processing-events/${pdfId}`);
-    
-    eventSource.onmessage = (event) => {
-      const status = event.data;
-      console.log(`PDF ${pdfId} status update: ${status}`);
-      
-      if (status === 'completed' || status === 'failed') {
-        eventSource.close();
-        eventSourcesRef.current.delete(pdfId);
-        
-        setProcessingPdfs(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(pdfId);
-          return newMap;
-        });
-        
-        fetchPDFs();
-        
-        if (status === 'completed') {
-          setMessages(prev => [...prev, {
-            id: Date.now(),
-            type: 'assistant',
-            content: 'PDF processing completed! The document is now ready for questions.',
-            timestamp: new Date()
-          }]);
-        } else {
-          setMessages(prev => [...prev, {
-            id: Date.now(),
-            type: 'assistant',
-            content: 'PDF processing failed. Please try uploading the file again.',
-            timestamp: new Date(),
-            error: true
-          }]);
-        }
-      }
-    };
-    
-    eventSource.onerror = (error) => {
-      console.error(`SSE error for PDF ${pdfId}:`, error);
-      eventSource.close();
-      eventSourcesRef.current.delete(pdfId);
-      checkSinglePdfStatus(pdfId);
-    };
-    
-    eventSourcesRef.current.set(pdfId, eventSource);
-  };
-
-  const checkSinglePdfStatus = async (pdfId) => {
-    try {
-      const response = await axios.get(`/api/processing-status/${pdfId}`);
-      
-      if (response.data.status === 'completed' || response.data.status === 'failed') {
-        setProcessingPdfs(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(pdfId);
-          return newMap;
-        });
-        fetchPDFs();
-      }
-    } catch (err) {
-      console.error(`Error checking status for PDF ${pdfId}:`, err);
-    }
-  };
+  }, [pdfs]);
 
   const fetchPDFs = async () => {
     try {
       const response = await axios.get('/api/pdfs');
       setPdfs(response.data.pdfs);
-      
-      const processingPdfsList = response.data.pdfs.filter(
-        pdf => pdf.processing_status === 'processing' || pdf.processing_status === 'pending'
-      );
-      
-      processingPdfsList.forEach(pdf => {
-        if (!eventSourcesRef.current.has(pdf.id)) {
-          startSSEMonitoring(pdf.id);
-          setProcessingPdfs(prev => new Map(prev).set(pdf.id, true));
-        }
-      });
     } catch (err) {
       console.error('Error fetching PDFs:', err);
     }
@@ -763,17 +1113,6 @@ const MainApp = ({ user, handleLogout }) => {
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
-    
-    const completedPdfs = pdfs.filter(p => p.processing_status === 'completed');
-    if (completedPdfs.length === 0) {
-      setMessages(prev => [...prev, {
-        id: Date.now(),
-        type: 'assistant',
-        content: 'Please upload at least one PDF document first. Use the attach button below to upload a PDF.',
-        timestamp: new Date()
-      }]);
-      return;
-    }
 
     const userMessage = {
       id: Date.now(),
@@ -791,21 +1130,19 @@ const MainApp = ({ user, handleLogout }) => {
         question: inputMessage
       });
 
-      const assistantMessage = {
+      setMessages(prev => [...prev, {
         id: Date.now() + 1,
         type: 'assistant',
         content: response.data.answer,
         sources: response.data.sources,
         responseTime: response.data.response_time,
         timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
+      }]);
     } catch (err) {
       setMessages(prev => [...prev, {
         id: Date.now() + 1,
         type: 'assistant',
-        content: 'Sorry, I encountered an error while processing your question. Please try again.',
+        content: 'Sorry, I encountered an error. Please try again.',
         timestamp: new Date(),
         error: true
       }]);
@@ -814,83 +1151,59 @@ const MainApp = ({ user, handleLogout }) => {
     }
   };
 
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
-  };
-
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
+  const handleFileUpload = async (file) => {
+    if (!file) return;
     
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleFile = async (file) => {
-    if (!file.name.endsWith('.pdf')) {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
       alert('Please upload only PDF files');
       return;
     }
 
     setUploading(true);
-    setShowUploadModal(false);
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-      const response = await axios.post('/api/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
+      console.log(`Uploading: ${file.name}`);
+      
+      const response = await axios.post('/api/upload', formData);
 
-      if (response.data.success) {
-        const pdfId = response.data.pdf_id;
-        
-        setProcessingPdfs(prev => new Map(prev).set(pdfId, true));
-        startSSEMonitoring(pdfId);
-        
-        setMessages(prev => [...prev, {
-          id: Date.now(),
-          type: 'assistant',
-          content: `Successfully uploaded "${file.name}". Processing the document...`,
-          timestamp: new Date()
-        }]);
-        
-        fetchPDFs();
-      } else {
-        setMessages(prev => [...prev, {
-          id: Date.now(),
-          type: 'assistant',
-          content: response.data.message || 'File upload failed',
-          timestamp: new Date(),
-          error: !response.data.success
-        }]);
-      }
-    } catch (err) {
       setMessages(prev => [...prev, {
         id: Date.now(),
         type: 'assistant',
-        content: `Error uploading file: ${err.response?.data?.detail || 'Unknown error'}`,
+        content: `Successfully uploaded "${file.name}". The file is being processed and will be ready shortly.`,
+        timestamp: new Date()
+      }]);
+      
+      // Fetch PDFs immediately and after a delay
+      fetchPDFs();
+      setTimeout(fetchPDFs, 2000);
+      
+    } catch (err) {
+      console.error('Upload error:', err);
+      
+      let errorMsg = 'Unknown error';
+      if (err.response?.data?.detail) {
+        errorMsg = err.response.data.detail;
+      } else if (err.response?.status === 401) {
+        errorMsg = 'Session expired. Please login again.';
+        handleLogout();
+        return;
+      }
+      
+      setMessages(prev => [...prev, {
+        id: Date.now(),
+        type: 'assistant',
+        content: `Error uploading file: ${errorMsg}`,
         timestamp: new Date(),
         error: true
       }]);
     } finally {
       setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -898,17 +1211,12 @@ const MainApp = ({ user, handleLogout }) => {
     if (!window.confirm(`Delete "${filename}"?`)) return;
 
     try {
-      if (eventSourcesRef.current.has(pdfId)) {
-        eventSourcesRef.current.get(pdfId).close();
-        eventSourcesRef.current.delete(pdfId);
-      }
-      
       await axios.delete(`/api/pdfs/${pdfId}`);
       fetchPDFs();
       setMessages(prev => [...prev, {
         id: Date.now(),
         type: 'assistant',
-        content: `Successfully deleted "${filename}"`,
+        content: `Deleted "${filename}"`,
         timestamp: new Date()
       }]);
     } catch (err) {
@@ -916,337 +1224,310 @@ const MainApp = ({ user, handleLogout }) => {
     }
   };
 
-  const formatFileSize = (bytes) => {
-    if (!bytes || bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-  };
-
-  const newChat = () => {
-    setMessages([{
-      id: Date.now(),
-      type: 'assistant',
-      content: 'Starting a new conversation. How can I help you with your PDF documents?',
-      timestamp: new Date()
-    }]);
-  };
-
-  const getStatusDisplay = (pdf) => {
-    const isProcessing = processingPdfs.has(pdf.id);
-    
-    if (isProcessing) {
-      return {
-        icon: '⏳',
-        text: 'processing',
-        color: '#FFA500'
-      };
-    }
-    
-    switch (pdf.processing_status) {
-      case 'completed':
-        return {
-          icon: '✓',
-          text: 'completed',
-          color: '#10A37F'
-        };
-      case 'failed':
-        return {
-          icon: '✗',
-          text: 'failed',
-          color: '#FF4444'
-        };
-      case 'processing':
-      case 'pending':
-        return {
-          icon: '⏳',
-          text: pdf.processing_status,
-          color: '#FFA500'
-        };
-      default:
-        return {
-          icon: '?',
-          text: pdf.processing_status,
-          color: '#8e8ea0'
-        };
-    }
-  };
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   return (
     <div style={styles.container}>
-      {/* Sidebar */}
-      <div style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>
-          {/* User Info */}
-          <div style={styles.userInfo}>
-            <div style={styles.userAvatar}>
-              {user.username.charAt(0).toUpperCase()}
+      {/* Header with navigation */}
+      <div style={styles.header}>
+        <button 
+          onClick={() => setShowSidebar(!showSidebar)}
+          style={styles.menuButton}
+          title={showSidebar ? "Hide sidebar" : "Show sidebar"}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+        <h1 style={styles.headerTitle}>UTAR HANDBOOK</h1>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ color: '#8e8ea0', fontSize: '12px' }}>
+            {pdfs.filter(p => p.processing_status === 'completed').length} PDFs ready
+          </span>
+        </div>
+      </div>
+
+      <div style={styles.mainContent}>
+        <div style={styles.sidebar}>
+          <div style={styles.sidebarHeader}>
+            <div style={styles.userInfo}>
+              <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '4px' }}>
+                {user.full_name || user.username}
+              </div>
+              <div style={{ fontSize: '12px', color: '#8e8ea0' }}>{user.email}</div>
+              <div style={{ fontSize: '11px', color: '#10A37F', marginTop: '4px' }}>
+                Role: {user.role}
+              </div>
+              {user.role === 'admin' && (
+                <button 
+                  style={styles.adminButton}
+                  onClick={() => setCurrentView('admin')}
+                >
+                  Admin Panel
+                </button>
+              )}
+              <button 
+                style={{ ...styles.adminButton, backgroundColor: 'transparent', border: '1px solid #565869', marginTop: '8px' }}
+                onClick={handleLogout}
+              >
+                Sign Out
+              </button>
             </div>
-            <div style={styles.userName}>{user.full_name || user.username}</div>
-            <div style={styles.userEmail}>{user.email}</div>
-            <button 
-              style={styles.logoutButton}
-              onClick={handleLogout}
-              onMouseEnter={(e) => e.target.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'}
+
+            {/* New Chat Button */}
+            <button
+              style={{
+                width: '100%',
+                padding: '10px',
+                backgroundColor: 'transparent',
+                border: '1px solid #565869',
+                borderRadius: '6px',
+                color: '#ffffff',
+                cursor: 'pointer',
+                fontSize: '14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                marginTop: '12px',
+                transition: 'background-color 0.2s'
+              }}
+              onClick={() => {
+                setMessages([{
+                  id: 1,
+                  type: 'assistant',
+                  content: `Hello ${user.full_name || user.username}! I can help you analyze PDF documents. Upload your PDFs to get started.`,
+                  timestamp: new Date()
+                }]);
+              }}
+              onMouseEnter={(e) => e.target.style.backgroundColor = '#2a2b32'}
               onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
             >
-              Sign Out
+              <span style={{ fontSize: '18px' }}>+</span> New chat
             </button>
           </div>
           
-          <button 
-            style={styles.newChatButton}
-            onMouseEnter={(e) => e.target.style.backgroundColor = '#2a2b32'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
-            onClick={newChat}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 4v16m8-8H4" />
-            </svg>
-            New chat
-          </button>
-        </div>
-        
-        <div style={styles.sidebarContent}>
-          <div style={{ marginBottom: '16px', color: '#8e8ea0', fontSize: '12px', fontWeight: '500' }}>
-            YOUR PDFS
-          </div>
-          {pdfs.length === 0 ? (
-            <div style={{ color: '#8e8ea0', fontSize: '14px' }}>No PDFs uploaded yet</div>
-          ) : (
-            pdfs.map((pdf) => {
-              const status = getStatusDisplay(pdf);
-              return (
-                <div 
-                  key={pdf.id} 
-                  style={styles.pdfItem}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#343541'}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#2a2b32'}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
+            <div style={{ marginBottom: '16px', color: '#8e8ea0', fontSize: '12px', fontWeight: '500', textTransform: 'uppercase' }}>
+              Your PDFs ({pdfs.length})
+            </div>
+            {pdfs.length === 0 ? (
+              <div style={{ 
+                color: '#8e8ea0', 
+                fontSize: '13px', 
+                textAlign: 'center', 
+                padding: '20px' 
+              }}>
+                No PDFs uploaded yet
+              </div>
+            ) : (
+              pdfs.map(pdf => (
+                <div key={pdf.id} style={{ 
+                  backgroundColor: '#2a2b32', 
+                  borderRadius: '6px', 
+                  padding: '12px', 
+                  marginBottom: '8px',
+                  color: '#ffffff',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3a3b42'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#2a2b32'}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: '500', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {pdf.filename}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#8e8ea0' }}>
-                        <span style={{ color: status.color }}>
-                          {status.icon} {status.text}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
-                        {formatFileSize(pdf.file_size)} • {pdf.page_count || 0} pages
-                      </div>
-                    </div>
+                  <div style={{ fontWeight: '500', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>📄</span> {pdf.filename}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#8e8ea0' }}>
+                    {pdf.visibility === 'public' ? '🌐 Public' : '🔒 Private'}
+                    {pdf.is_owner && ' • Owner'}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
+                    Status: {pdf.processing_status === 'completed' ? '✓ Ready' : '⏳ Processing...'}
+                  </div>
+                  {pdf.is_owner && (
                     <button
-                      onClick={() => handleDeletePDF(pdf.id, pdf.filename)}
-                      style={{ 
-                        background: 'none', 
-                        border: 'none', 
-                        color: '#8e8ea0', 
-                        cursor: 'pointer',
-                        padding: '4px'
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeletePDF(pdf.id, pdf.filename);
                       }}
-                      onMouseEnter={(e) => e.target.style.color = '#FF4444'}
-                      onMouseLeave={(e) => e.target.style.color = '#8e8ea0'}
+                      style={{ 
+                        marginTop: '8px',
+                        padding: '4px 8px',
+                        backgroundColor: 'transparent',
+                        border: '1px solid #565869',
+                        borderRadius: '4px',
+                        color: '#ef4444',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M10 11v6M14 11v6M5 6h14l-1 13a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6z" />
-                      </svg>
+                      Delete
                     </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Main Area */}
-      <div style={styles.mainArea}>
-        {/* Header */}
-        <div style={styles.header}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <button 
-              onClick={() => setShowSidebar(!showSidebar)} 
-              style={styles.menuButton}
-              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#40414f'}
-              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M3 12h18M3 6h18M3 18h18" />
-              </svg>
-            </button>
-            <h1 style={{ fontSize: '20px', fontWeight: '600', color: '#ffffff' }}>PDF Assistant</h1>
-          </div>
-          <div style={{ color: '#8e8ea0', fontSize: '14px' }}>
-            {pdfs.filter(p => p.processing_status === 'completed').length} PDFs ready
-            {processingPdfs.size > 0 && ` • ${processingPdfs.size} processing`}
-          </div>
-        </div>
-
-        {/* Messages Area */}
-        <div style={styles.messagesArea}>
-          {messages.map((message) => (
-            <div key={message.id} style={{
-              ...styles.messageContainer,
-              ...(message.type === 'assistant' ? styles.assistantMessageContainer : styles.userMessageContainer)
-            }}>
-              <div style={styles.messageWrapper}>
-                <div style={{
-                  ...styles.avatar,
-                  ...(message.type === 'user' ? styles.userAvatarChat : styles.assistantAvatar)
-                }}>
-                  {message.type === 'user' ? user.username.charAt(0).toUpperCase() : 'A'}
-                </div>
-                <div style={styles.messageContent}>
-                  <div style={{ marginBottom: '4px', fontWeight: '600', fontSize: '14px' }}>
-                    {message.type === 'user' ? 'You' : 'PDF Assistant'}
-                    {message.responseTime && (
-                      <span style={{ fontSize: '12px', color: '#8e8ea0', marginLeft: '8px', fontWeight: 'normal' }}>
-                        {message.responseTime.toFixed(2)}s
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
-                  {message.sources && message.sources.length > 0 && (
-                    <div style={{ 
-                      marginTop: '12px', 
-                      padding: '12px', 
-                      backgroundColor: 'rgba(16, 163, 127, 0.1)', 
-                      borderRadius: '6px',
-                      fontSize: '13px',
-                      color: '#10A37F',
-                      border: '1px solid rgba(16, 163, 127, 0.2)'
-                    }}>
-                      <div style={{ fontWeight: '600', marginBottom: '8px' }}>Sources:</div>
-                      {message.sources.slice(0, 3).map((source, idx) => (
-                        <div key={idx} style={{ marginBottom: '4px' }}>
-                          📄 {source.filename} - Page {source.page}
-                        </div>
-                      ))}
-                    </div>
                   )}
                 </div>
-              </div>
-            </div>
-          ))}
-          {isLoading && (
-            <div style={{
-              ...styles.messageContainer,
-              ...styles.assistantMessageContainer
-            }}>
-              <div style={styles.messageWrapper}>
-                <div style={{ ...styles.avatar, ...styles.assistantAvatar }}>A</div>
-                <div style={styles.messageContent}>
-                  <div style={{ marginBottom: '4px', fontWeight: '600', fontSize: '14px' }}>PDF Assistant</div>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    <span style={{ animation: 'bounce 1.4s infinite', animationDelay: '0ms' }}>●</span>
-                    <span style={{ animation: 'bounce 1.4s infinite', animationDelay: '0.2s' }}>●</span>
-                    <span style={{ animation: 'bounce 1.4s infinite', animationDelay: '0.4s' }}>●</span>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div style={styles.mainArea}>
+          <div style={styles.messagesArea}>
+            {messages.map(message => (
+              <div key={message.id} style={{ 
+                padding: '24px', 
+                backgroundColor: message.type === 'assistant' ? '#444654' : '#343541',
+                borderBottom: '1px solid #4d4d5f'
+              }}>
+                <div style={{ maxWidth: '48rem', margin: '0 auto', display: 'flex', gap: '24px' }}>
+                  <div style={{ 
+                    width: '30px', 
+                    height: '30px', 
+                    borderRadius: '2px',
+                    backgroundColor: message.type === 'user' ? '#5436DA' : '#10A37F',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#ffffff',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    flexShrink: 0
+                  }}>
+                    {message.type === 'user' ? user.username.charAt(0).toUpperCase() : 'A'}
+                  </div>
+                  <div style={{ flex: 1, color: '#d1d5db', fontSize: '15px', lineHeight: '1.75' }}>
+                    <div style={{ marginBottom: '4px', fontWeight: '600', fontSize: '14px' }}>
+                      {message.type === 'user' ? 'You' : 'UTAR Assistant'}
+                    </div>
+                    {message.content}
+                    {message.sources && message.sources.length > 0 && (
+                      <div style={{ 
+                        marginTop: '12px', 
+                        padding: '12px', 
+                        backgroundColor: 'rgba(16, 163, 127, 0.1)', 
+                        borderRadius: '6px',
+                        fontSize: '13px',
+                        color: '#10A37F'
+                      }}>
+                        <div style={{ fontWeight: '600', marginBottom: '8px' }}>Sources:</div>
+                        {message.sources.map((source, idx) => (
+                          <div key={idx}>📄 {source.filename} - Page {source.page}</div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
+            ))}
+            {isLoading && (
+              <div style={{ padding: '24px', backgroundColor: '#444654' }}>
+                <div style={{ maxWidth: '48rem', margin: '0 auto', display: 'flex', gap: '24px' }}>
+                  <div style={{ 
+                    width: '30px', 
+                    height: '30px', 
+                    borderRadius: '2px',
+                    backgroundColor: '#10A37F',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#ffffff',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    flexShrink: 0
+                  }}>
+                    A
+                  </div>
+                  <div style={{ flex: 1, color: '#d1d5db' }}>
+                    <div style={{ marginBottom: '4px', fontWeight: '600', fontSize: '14px' }}>
+                      UTAR Assistant
+                    </div>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      <span>Thinking</span>
+                      <span className="animate-pulse">...</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
 
-        {/* Input Area */}
-        <div style={styles.inputArea}>
-          <div style={styles.inputWrapper}>
-            <div style={styles.inputContainer}>
-              <button 
-                onClick={() => setShowUploadModal(true)} 
-                style={{ ...styles.button, ...styles.attachButton }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#40414f'}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-                </svg>
-              </button>
-              <textarea
-                ref={textareaRef}
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder="Message PDF Assistant..."
-                style={styles.input}
-                rows="1"
-              />
-              <button
-                onClick={handleSendMessage}
-                disabled={!inputMessage.trim() || isLoading}
-                style={{ ...styles.button, ...styles.sendButton }}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-                </svg>
-              </button>
-            </div>
-            <div style={styles.disclaimer}>
-              PDF Assistant can make mistakes. Check important info.
+          <div style={styles.inputArea}>
+            <div style={{ maxWidth: '48rem', margin: '0 auto' }}>
+              <div style={{ 
+                display: 'flex', 
+                gap: '12px',
+                backgroundColor: '#40414f',
+                borderRadius: '12px',
+                border: '1px solid #565869',
+                padding: '12px'
+              }}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf"
+                  onChange={(e) => e.target.files[0] && handleFileUpload(e.target.files[0])}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  title="Upload PDF"
+                  style={{ 
+                    padding: '8px',
+                    backgroundColor: 'transparent',
+                    border: 'none',
+                    color: uploading ? '#565869' : '#8e8ea0',
+                    cursor: uploading ? 'not-allowed' : 'pointer',
+                    fontSize: '20px'
+                  }}
+                >
+                  {uploading ? '⏳' : '📎'}
+                </button>
+                <input
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleSendMessage()}
+                  placeholder={pdfs.some(p => p.processing_status === 'completed') ? "Ask about your PDFs..." : "Upload a PDF to get started..."}
+                  disabled={isLoading}
+                  style={{ 
+                    flex: 1,
+                    backgroundColor: 'transparent',
+                    border: 'none',
+                    outline: 'none',
+                    color: '#ffffff',
+                    fontSize: '15px'
+                  }}
+                />
+                <button
+                  onClick={handleSendMessage}
+                  disabled={!inputMessage.trim() || isLoading}
+                  style={{ 
+                    padding: '8px 16px',
+                    backgroundColor: inputMessage.trim() && !isLoading ? '#10A37F' : 'transparent',
+                    border: 'none',
+                    borderRadius: '6px',
+                    color: inputMessage.trim() && !isLoading ? '#ffffff' : '#565869',
+                    cursor: inputMessage.trim() && !isLoading ? 'pointer' : 'not-allowed',
+                    fontSize: '14px',
+                    fontWeight: '600'
+                  }}
+                >
+                  Send
+                </button>
+              </div>
+              {uploading && (
+                <div style={{ marginTop: '8px', color: '#8e8ea0', fontSize: '13px', textAlign: 'center' }}>
+                  Uploading file...
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
-
-      {/* Upload Modal */}
-      {showUploadModal && (
-        <div style={styles.modal} onClick={() => setShowUploadModal(false)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#ffffff' }}>Upload PDF</h2>
-              <button
-                onClick={() => setShowUploadModal(false)}
-                style={{ background: 'none', border: 'none', color: '#8e8ea0', cursor: 'pointer', padding: '4px' }}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            
-            <div
-              style={styles.uploadZone}
-              onDragEnter={handleDrag}
-              onDragLeave={handleDrag}
-              onDragOver={handleDrag}
-              onDrop={handleDrop}
-            >
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#8e8ea0" strokeWidth="2" style={{ margin: '0 auto 16px' }}>
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-              </svg>
-              <p style={{ color: '#ffffff', marginBottom: '8px', fontSize: '16px' }}>Drag and drop your PDF here</p>
-              <p style={{ color: '#8e8ea0', fontSize: '14px' }}>or</p>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf"
-                onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])}
-                style={{ display: 'none' }}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                style={styles.uploadButton}
-                disabled={uploading}
-              >
-                {uploading ? 'Uploading...' : 'Choose File'}
-              </button>
-              <p style={{ color: '#8e8ea0', fontSize: '12px', marginTop: '16px' }}>Maximum file size: 50MB</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add keyframe animations */}
-      <style>{`
-        @keyframes bounce {
-          0%, 60%, 100% { transform: translateY(0); }
-          30% { transform: translateY(-10px); }
-        }
-      `}</style>
     </div>
   );
 };

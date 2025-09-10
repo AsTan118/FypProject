@@ -1,123 +1,146 @@
 # auth/routes.py
-from fastapi import APIRouter, HTTPException, Depends, status
-from datetime import datetime
-from typing import Dict
-from models import UserSignup, UserLogin, Token
-from database import get_db
-from auth.utils import hash_password, verify_password, create_access_token, verify_token
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+import bcrypt
+import jwt
+from datetime import datetime, timedelta
+from database import get_db_connection
+from auth.utils import get_current_user
 
-router = APIRouter(prefix="/api/auth", tags=["authentication"])
+router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
-@router.post("/signup", response_model=Token)
-async def signup(user: UserSignup):
+# JWT configuration
+SECRET_KEY = "your-secret-key-change-in-production"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
+
+# Request/Response models
+class UserSignup(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+    role: Optional[str] = "student"  # Default to student
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+def create_access_token(data: dict):
+    """Create JWT access token"""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+@router.post("/signup", response_model=TokenResponse)
+async def signup(user_data: UserSignup):
     """Register a new user"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Check if user exists
-        cursor.execute("SELECT id FROM users WHERE email = ? OR username = ?", 
-                      (user.email, user.username))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Check if username or email already exists
+        cursor.execute("SELECT id FROM users WHERE username = ? OR email = ?", 
+                      (user_data.username, user_data.email))
         if cursor.fetchone():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User with this email or username already exists"
-            )
+            raise HTTPException(status_code=400, detail="Username or email already exists")
         
-        # Create user
-        hashed_password = hash_password(user.password)
+        # Hash password
+        password_hash = bcrypt.hashpw(
+            user_data.password.encode('utf-8'), 
+            bcrypt.gensalt()
+        ).decode('utf-8')
+        
+        # Insert new user (only admins can create admin accounts)
         cursor.execute('''
-            INSERT INTO users (email, username, password_hash, full_name)
-            VALUES (?, ?, ?, ?)
-        ''', (user.email, user.username, hashed_password, user.full_name))
+            INSERT INTO users (username, email, password_hash, full_name, role)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_data.username, user_data.email, password_hash, 
+              user_data.full_name, 'student'))  # Always create as student via signup
         
         user_id = cursor.lastrowid
         conn.commit()
         
-        # Create token
+        # Create access token
         access_token = create_access_token({
-            "user_id": user_id,
-            "username": user.username
+            "sub": str(user_id),
+            "username": user_data.username,
+            "role": "student"
         })
         
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
+        return TokenResponse(
+            access_token=access_token,
+            user={
                 "id": user_id,
-                "username": user.username,
-                "email": user.email,
-                "full_name": user.full_name
+                "username": user_data.username,
+                "email": user_data.email,
+                "full_name": user_data.full_name,
+                "role": "student"
             }
-        }
-
-@router.post("/login", response_model=Token)
-async def login(user_credentials: UserLogin):
-    """Login user and return token"""
-    with get_db() as conn:
-        cursor = conn.cursor()
+        )
         
+    finally:
+        conn.close()
+
+@router.post("/login", response_model=TokenResponse)
+async def login(credentials: UserLogin):
+    """Login user"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
         # Find user by username or email
         cursor.execute('''
-            SELECT id, username, email, password_hash, full_name, is_active
+            SELECT id, username, email, password_hash, full_name, role 
             FROM users 
             WHERE username = ? OR email = ?
-        ''', (user_credentials.username, user_credentials.username))
+        ''', (credentials.username, credentials.username))
         
         user = cursor.fetchone()
         
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials"
-            )
-        
-        if not user['is_active']:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Account is deactivated"
-            )
+            raise HTTPException(status_code=401, detail="Invalid credentials")
         
         # Verify password
-        if not verify_password(user_credentials.password, user['password_hash']):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials"
-            )
+        if not bcrypt.checkpw(credentials.password.encode('utf-8'), 
+                             user['password_hash'].encode('utf-8')):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        # Update last login
-        cursor.execute("UPDATE users SET last_login = ? WHERE id = ?", 
-                      (datetime.utcnow(), user['id']))
-        conn.commit()
-        
-        # Create token
+        # Create access token
         access_token = create_access_token({
-            "user_id": user['id'],
-            "username": user['username']
+            "sub": str(user['id']),
+            "username": user['username'],
+            "role": user['role']
         })
         
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
+        return TokenResponse(
+            access_token=access_token,
+            user={
                 "id": user['id'],
                 "username": user['username'],
                 "email": user['email'],
-                "full_name": user['full_name']
+                "full_name": user['full_name'],
+                "role": user['role']
             }
-        }
+        )
+        
+    finally:
+        conn.close()
 
 @router.get("/me")
-async def get_current_user(current_user: Dict = Depends(verify_token)):
-    """Get current user info"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, username, email, full_name, created_at, last_login
-            FROM users WHERE id = ?
-        ''', (current_user['user_id'],))
-        
-        user = cursor.fetchone()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        return dict(user)
+async def get_current_user_info(current_user: dict = Depends(get_current_user)):
+    """Get current user information"""
+    return current_user
+
+@router.get("/verify")
+async def verify_token(current_user: dict = Depends(get_current_user)):
+    """Verify if token is valid"""
+    return {"valid": True, "user": current_user}

@@ -1,3 +1,7 @@
 .env
 __pycache__/
 venv/
+pdfs/
+chrome_langchain_db/
+database.db
+data/
